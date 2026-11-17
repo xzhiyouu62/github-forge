@@ -18,10 +18,14 @@ const ok = (status: number, body: unknown, headers?: Record<string, string>): Re
 const err = (status: number, message: string): RestResult => ({ status, body: { message } });
 export const notFound = (): RestResult => err(404, 'Not Found');
 
+// The viewer's user object is constant across every response; share one
+// instance instead of rebuilding it per issue/comment/repo serialization.
+const VIEWER_JSON: Record<string, unknown> = {
+  login: VIEWER.login, id: VIEWER.id, type: 'User', name: VIEWER.name, email: VIEWER.email,
+};
+
 export function userJson(login: string): Record<string, unknown> {
-  if (login === VIEWER.login) {
-    return { login: VIEWER.login, id: VIEWER.id, type: 'User', name: VIEWER.name, email: VIEWER.email };
-  }
+  if (login === VIEWER.login) return VIEWER_JSON;
   return { login, id: 0, type: 'User' };
 }
 

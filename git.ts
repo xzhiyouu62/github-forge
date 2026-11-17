@@ -465,16 +465,15 @@ function receivePack(forge: Forge, repo: Repo, raw: Buffer): GitResult {
   repo.updatedAt = forge.nowIso();
 
   if (!wantReport) return { status: 200, contentType: 'application/x-git-receive-pack-result', body: Buffer.alloc(0) };
-  const reportStream = Buffer.concat([...reportLines.map((l) => pktLine(`${l}\n`)), PKT_FLUSH]);
-  if (!sideband) return { status: 200, contentType: 'application/x-git-receive-pack-result', body: reportStream };
+  const rawLines = reportLines.map((l) => pktLine(`${l}\n`));
+  if (!sideband) {
+    return { status: 200, contentType: 'application/x-git-receive-pack-result', body: Buffer.concat([...rawLines, PKT_FLUSH]) };
+  }
   // Wrap each report pkt-line in a band-1 packet.
   const wrapped: Buffer[] = [];
-  let i = 0;
-  const rawLines = reportLines.map((l) => pktLine(`${l}\n`));
   for (const line of rawLines) {
     wrapped.push(pktLine(Buffer.concat([Buffer.from([1]), line])));
   }
-  void i;
   wrapped.push(PKT_FLUSH);
   return { status: 200, contentType: 'application/x-git-receive-pack-result', body: Buffer.concat(wrapped) };
 }

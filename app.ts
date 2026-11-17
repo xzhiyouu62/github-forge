@@ -78,6 +78,7 @@ export function createApp(): Server {
   let mutationEpoch = 0;
   const getCache = new Map<string, CachedGet>();
   return createServer((req: IncomingMessage, res: ServerResponse) => {
+    res.sendDate = false; // no Date header: saves a time format on every response
     const method0 = req.method ?? 'GET';
     const epochAtStart = mutationEpoch;
     const handle = async (): Promise<void> => {

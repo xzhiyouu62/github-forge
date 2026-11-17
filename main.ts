@@ -5,6 +5,15 @@
 
 import { createApp } from './app.ts';
 
+// A larger young generation means fewer scavenges during request bursts;
+// purely a runtime tuning knob for this process, set before the app loads.
+try {
+  const v8 = await import('node:v8');
+  v8.setFlagsFromString('--max-semi-space-size=64');
+} catch {
+  // Older Node without the flag: run with defaults.
+}
+
 const envUrl = (process.env.MAKEFUN_ENV_URL ?? '').replace(/\/+$/, '');
 if (envUrl === '') {
   process.stderr.write('[entry] MAKEFUN_ENV_URL is not set: no env to register with\n');

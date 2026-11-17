@@ -64,6 +64,7 @@ interface CachedGet {
   epoch: number;
   status: number;
   body: string;
+  length: number;
   headers?: Record<string, string>;
 }
 
@@ -80,8 +81,24 @@ export function createApp(): Server {
     const method0 = req.method ?? 'GET';
     const epochAtStart = mutationEpoch;
     const handle = async (): Promise<void> => {
-      const url = new URL(req.url ?? '/', 'http://entry');
-      const path = url.pathname;
+      // Split the request target by hand: new URL() per request is measurable
+      // at bench request rates. Anything unusual (absolute form, dot
+      // segments) takes the URL parser instead.
+      const rawUrl = req.url ?? '/';
+      let path: string;
+      let searchParams: URLSearchParams;
+      let urlKey: string;
+      if (rawUrl.startsWith('/') && !rawUrl.includes('..') && !rawUrl.includes('/.')) {
+        const q = rawUrl.indexOf('?');
+        path = q >= 0 ? rawUrl.slice(0, q) : rawUrl;
+        searchParams = new URLSearchParams(q >= 0 ? rawUrl.slice(q + 1) : '');
+        urlKey = rawUrl;
+      } else {
+        const url = new URL(rawUrl, 'http://entry');
+        path = url.pathname;
+        searchParams = url.searchParams;
+        urlKey = `${path}${url.search}`;
+      }
       const method = req.method ?? 'GET';
 
       if (method === 'GET' && path === '/healthz') {
@@ -94,7 +111,9 @@ export function createApp(): Server {
         return;
       }
 
-      const raw = await readBody(req);
+      // GET/HEAD carry no body the handlers read; skipping the stream wait
+      // keeps the read path to a single tick.
+      const raw = method === 'GET' || method === 'HEAD' ? Buffer.alloc(0) : await readBody(req);
 
       if (path === '/api/graphql' && method === 'POST') {
         let gqlBody: unknown;
@@ -132,14 +151,14 @@ export function createApp(): Server {
             return;
           }
         }
-        const cacheKey = method === 'GET' ? `${req.headers.host ?? ''} ${path}${url.search}` : '';
+        const cacheKey = method === 'GET' ? `${req.headers.host ?? ''} ${urlKey}` : '';
         if (method === 'GET') {
           const hit = getCache.get(cacheKey);
           if (hit && hit.epoch === mutationEpoch) {
             res.writeHead(hit.status, {
               'content-type': JSON_TYPE,
               'x-github-request-id': requestId(),
-              'content-length': Buffer.byteLength(hit.body),
+              'content-length': hit.length,
               ...(hit.headers ?? {}),
             });
             res.end(hit.body);
@@ -149,11 +168,11 @@ export function createApp(): Server {
         const seg = path.split('/').filter((s) => s !== '').slice(2).map(decodeSeg);
         const proto = req.headers['x-forwarded-proto'] ?? 'http';
         const baseUrl = `${proto}://${req.headers.host ?? 'localhost'}`;
-        const result = handleRest(forge, method, seg, url.searchParams, body, baseUrl) ?? notFound();
+        const result = handleRest(forge, method, seg, searchParams, body, baseUrl) ?? notFound();
         if (method === 'GET' && result.status === 200 && !result.noBody && result.body !== undefined && mutationEpoch === epochAtStart) {
           const text = `${JSON.stringify(result.body)}\n`;
           if (getCache.size > 2048) getCache.clear();
-          getCache.set(cacheKey, { epoch: epochAtStart, status: result.status, body: text, headers: result.headers });
+          getCache.set(cacheKey, { epoch: epochAtStart, status: result.status, body: text, length: Buffer.byteLength(text), headers: result.headers });
           res.writeHead(result.status, {
             'content-type': JSON_TYPE,
             'x-github-request-id': requestId(),
@@ -169,7 +188,7 @@ export function createApp(): Server {
 
       const gitMatch = /^\/([^/]+)\/([^/]+)\.git(\/.*)$/.exec(path);
       if (gitMatch) {
-        const result = handleGit(forge, req, method, decodeSeg(gitMatch[1]), decodeSeg(gitMatch[2]), gitMatch[3], url.searchParams, raw);
+        const result = handleGit(forge, req, method, decodeSeg(gitMatch[1]), decodeSeg(gitMatch[2]), gitMatch[3], searchParams, raw);
         if (result) {
           res.writeHead(result.status, { 'content-type': result.contentType, 'content-length': result.body.length });
           res.end(result.body);

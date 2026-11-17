@@ -42,18 +42,23 @@ function peelToCommit(store: ObjectStore, sha: string): string | null {
 
 // ---------- advertisements ----------
 
-function v2Advertisement(): GitResult {
-  const lines = [
+// The v2 advertisement names no repo state: build its body once.
+const V2_ADVERTISEMENT_BODY = Buffer.concat([
+  ...[
     'version 2\n',
     `agent=${AGENT}\n`,
     'ls-refs=unborn\n',
     'fetch=shallow\n',
     'object-format=sha1\n',
-  ];
+  ].map((l) => pktLine(l)),
+  PKT_FLUSH,
+]);
+
+function v2Advertisement(): GitResult {
   return {
     status: 200,
     contentType: 'application/x-git-upload-pack-advertisement',
-    body: Buffer.concat([...lines.map((l) => pktLine(l)), PKT_FLUSH]),
+    body: V2_ADVERTISEMENT_BODY,
   };
 }
 
@@ -210,6 +215,10 @@ function sidebandPack(pack: Buffer): Buffer {
 
 // ---------- upload-pack ----------
 
+// ls-refs output is a pure function of (repo refs, default branch, options):
+// refsVersion bumps on every ref mutation, so a cached body stays exact.
+const lsRefsCache = new Map<string, Buffer>();
+
 function lsRefs(forge: Forge, repo: Repo, packets: Packet[]): GitResult {
   let peel = false;
   let symrefs = false;
@@ -222,6 +231,11 @@ function lsRefs(forge: Forge, repo: Repo, packets: Packet[]): GitResult {
     else if (line === 'symrefs') symrefs = true;
     else if (line === 'unborn') unborn = true;
     else if (line.startsWith('ref-prefix ')) prefixes.push(line.slice('ref-prefix '.length));
+  }
+  const cacheKey = `${repo.owner}/${repo.name}|${repo.refsVersion}|${repo.defaultBranch}|${peel ? 1 : 0}${symrefs ? 1 : 0}${unborn ? 1 : 0}|${prefixes.join(',')}`;
+  const cachedBody = lsRefsCache.get(cacheKey);
+  if (cachedBody) {
+    return { status: 200, contentType: 'application/x-git-upload-pack-result', body: cachedBody };
   }
   const match = (name: string): boolean => prefixes.length === 0 || prefixes.some((p) => name.startsWith(p));
   const lines: string[] = [];
@@ -240,10 +254,13 @@ function lsRefs(forge: Forge, repo: Repo, packets: Packet[]): GitResult {
     }
     lines.push(line);
   }
+  const body = Buffer.concat([...lines.map((l) => pktLine(`${l}\n`)), PKT_FLUSH]);
+  if (lsRefsCache.size > 512) lsRefsCache.clear();
+  lsRefsCache.set(cacheKey, body);
   return {
     status: 200,
     contentType: 'application/x-git-upload-pack-result',
-    body: Buffer.concat([...lines.map((l) => pktLine(`${l}\n`)), PKT_FLUSH]),
+    body,
   };
 }
 
@@ -424,6 +441,7 @@ function receivePack(forge: Forge, repo: Repo, raw: Buffer): GitResult {
       if (cmd.ref === `refs/heads/${repo.defaultBranch}`) { fail('deletion of the current branch prohibited'); continue; }
       if (cmd.oldOid !== ZERO && cmd.oldOid !== current) { fail('stale info'); continue; }
       repo.refs.delete(cmd.ref);
+      repo.refsVersion += 1;
       reportLines.push(`ok ${cmd.ref}`);
       continue;
     }
@@ -431,6 +449,7 @@ function receivePack(forge: Forge, repo: Repo, raw: Buffer): GitResult {
     if (cmd.oldOid === ZERO) {
       if (repo.refs.has(cmd.ref)) { fail('reference already exists'); continue; }
       repo.refs.set(cmd.ref, cmd.newOid);
+      repo.refsVersion += 1;
       reportLines.push(`ok ${cmd.ref}`);
       continue;
     }
@@ -440,6 +459,7 @@ function receivePack(forge: Forge, repo: Repo, raw: Buffer): GitResult {
       continue;
     }
     repo.refs.set(cmd.ref, cmd.newOid);
+    repo.refsVersion += 1;
     reportLines.push(`ok ${cmd.ref}`);
   }
   repo.updatedAt = forge.nowIso();

@@ -167,14 +167,29 @@ interface RawEntry {
 
 /**
  * Inflate the zlib stream starting at `start`; returns the payload and the offset just past it.
- * inflateSync tolerates trailing bytes, so the exact end is the smallest window that inflates:
- * double to bracket it, then binary-search the boundary.
+ * Fast path: one inflateSync with { info: true } — the engine's bytesWritten is exactly the
+ * compressed stream's length, so the end is known in one call; the caller verifies the payload
+ * against the entry header's declared size and falls back to the search when anything is off.
+ * Fallback: inflateSync tolerates trailing bytes, so the exact end is the smallest window that
+ * inflates: double to bracket it, then binary-search the boundary.
  */
-function inflateAt(pack: Buffer, start: number, exactEnd?: number): { payload: Buffer; end: number } {
+function inflateAt(pack: Buffer, start: number, expectedSize: number, exactEnd?: number): { payload: Buffer; end: number } {
   if (exactEnd !== undefined) {
     // The stream is known to end exactly here (the pack's last object, right
     // before the trailer): one inflate, no search.
     return { payload: inflateSync(pack.subarray(start, exactEnd)), end: exactEnd };
+  }
+  try {
+    const out = inflateSync(pack.subarray(start, pack.length - 20), { info: true }) as unknown as {
+      buffer: Buffer;
+      engine: { bytesWritten: number };
+    };
+    const consumed = out.engine.bytesWritten;
+    if (consumed > 0 && start + consumed <= pack.length - 20 && out.buffer.length === expectedSize) {
+      return { payload: out.buffer, end: start + consumed };
+    }
+  } catch {
+    // fall through to the window search
   }
   const tryEnd = (end: number): Buffer | null => {
     try {
@@ -211,9 +226,13 @@ function parseEntries(pack: Buffer): { entries: RawEntry[]; count: number } {
     let byte = pack[offset];
     offset += 1;
     const typeNum = (byte >> 4) & 0x07;
+    let size = byte & 0x0f;
+    let shift = 4;
     while (byte & 0x80) {
       byte = pack[offset];
       offset += 1;
+      size += (byte & 0x7f) * 2 ** shift;
+      shift += 7;
     }
     const kind = NUM_TYPE[typeNum];
     if (!kind) throw new Error(`unknown pack object type ${typeNum}`);
@@ -232,7 +251,8 @@ function parseEntries(pack: Buffer): { entries: RawEntry[]; count: number } {
       entry.baseSha = pack.subarray(offset, offset + 20).toString('hex');
       offset += 20;
     }
-    const { payload, end } = inflateAt(pack, offset, n === count - 1 ? pack.length - 20 : undefined);
+    const { payload, end } = inflateAt(pack, offset, size, n === count - 1 ? pack.length - 20 : undefined);
+    if (payload.length !== size) throw new Error('pack entry size mismatch');
     entry.data = payload;
     offset = end;
     entries.push(entry);
@@ -256,6 +276,18 @@ export function readPack(
   hashObject?: (type: ObjType, payload: Buffer) => string,
 ): { objects: PackObject[]; count: number } {
   const { entries, count } = parseEntries(pack);
+  // Fast path: a pack of plain entries (the common push) needs no delta
+  // machinery — hash each payload once, in order.
+  if (entries.every((e) => e.kind !== 'ofs' && e.kind !== 'ref')) {
+    const objects = entries.map((e) => {
+      const type = e.kind as ObjType;
+      const sha = hashObject
+        ? hashObject(type, e.data)
+        : createHash('sha1').update(Buffer.from(`${type} ${e.data.length}\0`, 'utf8')).update(e.data).digest('hex');
+      return { sha, type, payload: e.data };
+    });
+    return { objects, count };
+  }
   const byOffset = new Map<number, number>();
   entries.forEach((e, i) => byOffset.set(e.offset, i));
   const resolved = new Array<{ type: ObjType; payload: Buffer } | undefined>(entries.length);
@@ -306,6 +338,6 @@ export function readPack(
 /** Store every object of a pack into the store; returns the object list. */
 export function ingestPack(store: ObjectStore, pack: Buffer): PackObject[] {
   const { objects } = readPack(pack, (sha) => store.get(sha), (t, p) => store.hash(t, p));
-  for (const o of objects) store.put(o.type, o.payload);
+  for (const o of objects) store.putHashed(o.sha, o.type, o.payload);
   return objects;
 }

@@ -279,6 +279,7 @@ function gitRefs(forge: Forge, repo: Repo, method: string, rest: string[], body:
     if (!forge.store.has(sha)) return err(422, 'sha does not name an object');
     if (repo.refs.has(ref)) return err(422, 'Reference already exists');
     repo.refs.set(ref, sha);
+    repo.refsVersion += 1;
     repo.updatedAt = forge.nowIso();
     return ok(201, { ref, object: { sha, type: forge.store.get(sha)!.type } });
   }
@@ -292,6 +293,7 @@ function gitRefs(forge: Forge, repo: Repo, method: string, rest: string[], body:
   if (method === 'DELETE') {
     if (!sha) return notFound();
     repo.refs.delete(full);
+    repo.refsVersion += 1;
     return { status: 204, noBody: true };
   }
   return notFound();
@@ -448,6 +450,7 @@ export function commitOnBranch(forge: Forge, repo: Repo, branch: string, tree: s
   const ident = { name: VIEWER.name, email: VIEWER.email, epochSec: now };
   const sha = createCommit(store, tree, parent ? [parent] : [], ident, ident, message);
   repo.refs.set(`refs/heads/${branch}`, sha);
+  repo.refsVersion += 1;
   repo.updatedAt = forge.nowIso();
   return sha;
 }
@@ -627,6 +630,7 @@ export function squashMerge(
   const ident = { name: VIEWER.name, email: VIEWER.email, epochSec: now };
   const sha = createCommit(forge.store, plan.tree, [baseSha], ident, ident, `${commitTitle ?? issue.title}\n`);
   repo.refs.set(`refs/heads/${pr.baseRef}`, sha);
+  repo.refsVersion += 1;
   pr.merged = true;
   pr.mergedAt = forge.nowIso();
   pr.mergeCommitSha = sha;

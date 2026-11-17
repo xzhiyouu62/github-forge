@@ -62,6 +62,7 @@ export interface Repo {
   createdAt: string;
   updatedAt: string;
   refs: Map<string, string>; // 'refs/heads/main' -> commit sha; tags under 'refs/tags/'
+  refsVersion: number; // bumped on every refs mutation; keys the ls-refs response cache
   labels: Map<string, Label>;
   issues: Map<number, Issue>;
   nextNumber: number; // issues and pulls share this counter, as on GitHub
@@ -91,6 +92,7 @@ export class Forge {
       createdAt: ts,
       updatedAt: ts,
       refs: new Map(),
+      refsVersion: 0,
       labels: new Map(),
       issues: new Map(),
       nextNumber: 1,

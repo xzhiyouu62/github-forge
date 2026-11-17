@@ -24,6 +24,11 @@ export class ObjectStore {
     return sha;
   }
 
+  /** Store an object whose sha the caller already computed (pack ingest hashes once). */
+  putHashed(sha: string, type: ObjType, payload: Buffer): void {
+    if (!this.objects.has(sha)) this.objects.set(sha, { type, payload });
+  }
+
   get(sha: string): GitObject | undefined {
     return this.objects.get(sha);
   }
@@ -216,8 +221,8 @@ export function ancestors(store: ObjectStore, tip: string): string[] {
   const seen = new Set<string>();
   const queue = [tip];
   const out: string[] = [];
-  while (queue.length > 0) {
-    const sha = queue.shift()!;
+  for (let head = 0; head < queue.length; head += 1) {
+    const sha = queue[head];
     if (seen.has(sha)) continue;
     seen.add(sha);
     const obj = store.get(sha);
@@ -228,8 +233,20 @@ export function ancestors(store: ObjectStore, tip: string): string[] {
   return out;
 }
 
+/** Early-exit reachability: walk from `tip` toward the root, stop at `maybeAncestor`. */
 export function isAncestor(store: ObjectStore, maybeAncestor: string, tip: string): boolean {
-  return ancestors(store, tip).includes(maybeAncestor);
+  const seen = new Set<string>();
+  const stack = [tip];
+  while (stack.length > 0) {
+    const sha = stack.pop()!;
+    if (sha === maybeAncestor) return true;
+    if (seen.has(sha)) continue;
+    seen.add(sha);
+    const obj = store.get(sha);
+    if (!obj || obj.type !== 'commit') continue;
+    for (const p of parseCommit(obj.payload).parents) stack.push(p);
+  }
+  return false;
 }
 
 /** A common ancestor of two commits (the first found walking from b), or null. */

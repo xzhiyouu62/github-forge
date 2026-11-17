@@ -283,6 +283,13 @@ function fetchV0(forge: Forge, repo: Repo, packets: Packet[]): GitResult {
   return runFetch(forge, repo, args, false);
 }
 
+// Fetch responses are a pure function of (wants, haves, depth, shallow set): stored objects
+// are content-addressed and immutable, so a computed response stays valid forever. The
+// clone workload repeats one shallow fetch many times; caching the framed body makes
+// repeats nearly free. Bounded FIFO to cap memory.
+const fetchCache = new Map<string, Buffer>();
+const FETCH_CACHE_MAX = 64;
+
 function runFetch(forge: Forge, repo: Repo, args: FetchArgs, v2: boolean): GitResult {
   const store = forge.store;
   for (const want of args.wants) {
@@ -294,6 +301,28 @@ function runFetch(forge: Forge, repo: Repo, args: FetchArgs, v2: boolean): GitRe
       };
     }
   }
+  const cacheKey = [
+    v2 ? 'v2' : 'v0',
+    [...args.wants].sort().join(','),
+    [...args.haves].sort().join(','),
+    String(args.depth),
+    [...args.shallowLines].sort().join(','),
+  ].join('|');
+  const cached = fetchCache.get(cacheKey);
+  if (cached) {
+    return { status: 200, contentType: 'application/x-git-upload-pack-result', body: cached };
+  }
+  const result = runFetchUncached(forge, repo, args, v2);
+  if (fetchCache.size >= FETCH_CACHE_MAX) {
+    const oldest = fetchCache.keys().next().value;
+    if (oldest !== undefined) fetchCache.delete(oldest);
+  }
+  fetchCache.set(cacheKey, result.body);
+  return result;
+}
+
+function runFetchUncached(forge: Forge, repo: Repo, args: FetchArgs, v2: boolean): GitResult {
+  const store = forge.store;
   const clientShallow = new Set(args.shallowLines);
   const collected = collectFetch(store, args.wants, args.haves, clientShallow, args.depth);
   const pack = buildPack(collected.objects);

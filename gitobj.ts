@@ -56,7 +56,18 @@ export function serializeTree(entries: TreeEntry[]): Buffer {
   return Buffer.concat(parts);
 }
 
+const treeMemo = new WeakMap<Buffer, TreeEntry[]>();
+const commitMemo = new WeakMap<Buffer, CommitInfo>();
+
 export function parseTree(payload: Buffer): TreeEntry[] {
+  const memo = treeMemo.get(payload);
+  if (memo) return memo;
+  const parsed = parseTreeInner(payload);
+  treeMemo.set(payload, parsed);
+  return parsed;
+}
+
+function parseTreeInner(payload: Buffer): TreeEntry[] {
   const out: TreeEntry[] = [];
   let i = 0;
   while (i < payload.length) {
@@ -103,7 +114,8 @@ export function treeEntryAt(store: ObjectStore, treeSha: string, path: string): 
 export function updateTree(store: ObjectStore, rootSha: string | null, path: string, blobSha: string | null, mode = '100644'): string {
   const parts = path.split('/');
   function rec(treeSha: string | null, depth: number): string {
-    const entries: TreeEntry[] = treeSha ? parseTree(store.get(treeSha)!.payload) : [];
+    // Copy: parseTree results are memoized and shared with every reader.
+    const entries: TreeEntry[] = treeSha ? [...parseTree(store.get(treeSha)!.payload)] : [];
     const name = parts[depth];
     const idx = entries.findIndex((e) => e.name === name);
     if (depth === parts.length - 1) {
@@ -169,6 +181,14 @@ export function createCommit(
 }
 
 export function parseCommit(payload: Buffer): CommitInfo {
+  const memo = commitMemo.get(payload);
+  if (memo) return memo;
+  const parsed = parseCommitInner(payload);
+  commitMemo.set(payload, parsed);
+  return parsed;
+}
+
+function parseCommitInner(payload: Buffer): CommitInfo {
   const text = payload.toString('utf8');
   const split = text.indexOf('\n\n');
   const head = split >= 0 ? text.slice(0, split) : text;

@@ -170,7 +170,12 @@ interface RawEntry {
  * inflateSync tolerates trailing bytes, so the exact end is the smallest window that inflates:
  * double to bracket it, then binary-search the boundary.
  */
-function inflateAt(pack: Buffer, start: number): { payload: Buffer; end: number } {
+function inflateAt(pack: Buffer, start: number, exactEnd?: number): { payload: Buffer; end: number } {
+  if (exactEnd !== undefined) {
+    // The stream is known to end exactly here (the pack's last object, right
+    // before the trailer): one inflate, no search.
+    return { payload: inflateSync(pack.subarray(start, exactEnd)), end: exactEnd };
+  }
   const tryEnd = (end: number): Buffer | null => {
     try {
       return inflateSync(pack.subarray(start, end));
@@ -227,7 +232,7 @@ function parseEntries(pack: Buffer): { entries: RawEntry[]; count: number } {
       entry.baseSha = pack.subarray(offset, offset + 20).toString('hex');
       offset += 20;
     }
-    const { payload, end } = inflateAt(pack, offset);
+    const { payload, end } = inflateAt(pack, offset, n === count - 1 ? pack.length - 20 : undefined);
     entry.data = payload;
     offset = end;
     entries.push(entry);

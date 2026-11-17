@@ -6,6 +6,7 @@ import { Forge } from './store.ts';
 import { handleRest, notFound, type RestResult } from './rest.ts';
 import { handleGit } from './git.ts';
 import { handleGraphQL } from './graphql.ts';
+import { handleMcp } from './mcp.ts';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 const TOKEN = process.env.MAKEFUN_SHOP_TOKEN ?? '';
@@ -90,6 +91,18 @@ export function createApp(): Server {
         const result = handleGraphQL(forge, gqlBody);
         res.writeHead(result.status, { 'content-type': 'application/json; charset=utf-8', 'x-github-request-id': requestId() });
         res.end(JSON.stringify(result.body));
+        return;
+      }
+
+      if (path === '/mcp') {
+        const result = handleMcp(forge, raw.toString('utf8'));
+        if (result.body === undefined) {
+          res.writeHead(result.status);
+          res.end();
+        } else {
+          res.writeHead(result.status, { 'content-type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify(result.body));
+        }
         return;
       }
 

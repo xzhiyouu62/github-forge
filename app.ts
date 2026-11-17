@@ -5,6 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { Forge } from './store.ts';
 import { handleRest, notFound, type RestResult } from './rest.ts';
 import { handleGit } from './git.ts';
+import { handleGraphQL } from './graphql.ts';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 const TOKEN = process.env.MAKEFUN_SHOP_TOKEN ?? '';
@@ -77,6 +78,20 @@ export function createApp(): Server {
       }
 
       const raw = await readBody(req);
+
+      if (path === '/api/graphql' && method === 'POST') {
+        let gqlBody: unknown;
+        try {
+          gqlBody = JSON.parse(raw.toString('utf8'));
+        } catch {
+          sendJson(res, 400, { errors: [{ message: 'Problems parsing JSON' }] });
+          return;
+        }
+        const result = handleGraphQL(forge, gqlBody);
+        res.writeHead(result.status, { 'content-type': 'application/json; charset=utf-8', 'x-github-request-id': requestId() });
+        res.end(JSON.stringify(result.body));
+        return;
+      }
 
       if (path === '/api/v3' || path.startsWith('/api/v3/')) {
         let body: Record<string, unknown> | undefined;

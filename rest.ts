@@ -601,28 +601,39 @@ function pulls(forge: Forge, repo: Repo, method: string, rest: string[], query: 
       return pr.merged ? { status: 204, noBody: true } : notFound();
     }
     if (method === 'PUT') {
-      if (pr.merged) return err(405, 'Pull Request is already merged');
-      const headSha = repo.refs.get(`refs/heads/${pr.headRef}`);
-      const baseSha = repo.refs.get(`refs/heads/${pr.baseRef}`);
-      if (!headSha || !baseSha) return err(405, 'Pull Request is not mergeable');
-      const plan = planSquash(forge, repo, baseSha, headSha);
-      if (!plan.ok || !plan.tree) return err(405, 'Pull Request is not mergeable: conflicts');
-      const store = forge.store;
-      const now = Math.floor(Date.now() / 1000);
-      const ident = { name: VIEWER.name, email: VIEWER.email, epochSec: now };
-      const title = str(body, 'commit_title') ?? issue.title;
-      const sha = createCommit(store, plan.tree, [baseSha], ident, ident, `${title}\n`);
-      repo.refs.set(`refs/heads/${pr.baseRef}`, sha);
-      pr.merged = true;
-      pr.mergedAt = forge.nowIso();
-      pr.mergeCommitSha = sha;
-      issue.state = 'closed';
-      issue.updatedAt = pr.mergedAt;
-      repo.updatedAt = pr.mergedAt;
-      return ok(200, { sha, merged: true, message: 'Pull Request successfully merged' });
+      const result = squashMerge(forge, repo, issue, str(body, 'commit_title'));
+      if (!result.ok) return err(405, result.reason ?? 'Pull Request is not mergeable');
+      return ok(200, { sha: result.sha, merged: true, message: 'Pull Request successfully merged' });
     }
   }
   return notFound();
+}
+
+/** Squash-merge a pull request onto its base branch. Shared by REST and GraphQL. */
+export function squashMerge(
+  forge: Forge,
+  repo: Repo,
+  issue: Issue,
+  commitTitle?: string,
+): { ok: boolean; sha?: string; reason?: string } {
+  const pr = issue.pullRequest!;
+  if (pr.merged) return { ok: false, reason: 'Pull Request is already merged' };
+  const headSha = repo.refs.get(`refs/heads/${pr.headRef}`);
+  const baseSha = repo.refs.get(`refs/heads/${pr.baseRef}`);
+  if (!headSha || !baseSha) return { ok: false, reason: 'Pull Request is not mergeable' };
+  const plan = planSquash(forge, repo, baseSha, headSha);
+  if (!plan.ok || !plan.tree) return { ok: false, reason: 'Pull Request is not mergeable: conflicts' };
+  const now = Math.floor(Date.now() / 1000);
+  const ident = { name: VIEWER.name, email: VIEWER.email, epochSec: now };
+  const sha = createCommit(forge.store, plan.tree, [baseSha], ident, ident, `${commitTitle ?? issue.title}\n`);
+  repo.refs.set(`refs/heads/${pr.baseRef}`, sha);
+  pr.merged = true;
+  pr.mergedAt = forge.nowIso();
+  pr.mergeCommitSha = sha;
+  issue.state = 'closed';
+  issue.updatedAt = pr.mergedAt;
+  repo.updatedAt = pr.mergedAt;
+  return { ok: true, sha };
 }
 
 /** The PR's changed files: merge-base..head diff with line counts. */

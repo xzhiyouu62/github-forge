@@ -4,6 +4,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { Forge } from './store.ts';
 import { handleRest, notFound, type RestResult } from './rest.ts';
+import { handleGit } from './git.ts';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 const TOKEN = process.env.MAKEFUN_SHOP_TOKEN ?? '';
@@ -93,6 +94,16 @@ export function createApp(): Server {
         const result = handleRest(forge, method, seg, url.searchParams, body, baseUrl) ?? notFound();
         sendResult(res, result);
         return;
+      }
+
+      const gitMatch = /^\/([^/]+)\/([^/]+)\.git(\/.*)$/.exec(path);
+      if (gitMatch) {
+        const result = handleGit(forge, req, method, decodeSeg(gitMatch[1]), decodeSeg(gitMatch[2]), gitMatch[3], url.searchParams, raw);
+        if (result) {
+          res.writeHead(result.status, { 'content-type': result.contentType, 'content-length': result.body.length });
+          res.end(result.body);
+          return;
+        }
       }
 
       sendResult(res, notFound());
